@@ -14,7 +14,7 @@ variables:
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
   # Your specific JFrog URL
-  JFROGJPDURL: 'https://mill.jfrog.info:12359'
+  JFROGJPDURL: https://hts2.jfrog.io/
 
 jobs:
 - deployment: MVN_PIPELINE
