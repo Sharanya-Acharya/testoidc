@@ -92,7 +92,9 @@ jobs:
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
-                           
+                  
+                  
+                  
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
                     "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
                     -d "oidc-azure-cicd-verified"
