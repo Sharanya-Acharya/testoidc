@@ -11,7 +11,8 @@ variables:
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
-  JFROGJPDURL: 'https://hts2.jfrog.io/'
+  # Fixed: Removed trailing slash to prevent double-slashes in API calls
+  JFROGJPDURL: 'https://hts2.jfrog.info'
 
 jobs:
 - deployment: MVN_PIPELINE
@@ -32,15 +33,18 @@ jobs:
                 script: | 
                   set -e
                   echo "Acquiring Azure Access Token..."
-                  # Uses jq -r to extract a clean string for the next step
+                  # data-urlencode safely handles special characters in your secret
                   AZ_RESP=$(curl -s --location '$(AZURETOKENURL)' \
                     --header 'Content-Type: application/x-www-form-urlencoded' \
-                    --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)')
+                    --data-urlencode "client_id=$(AZURECLIENTID)" \
+                    --data-urlencode "grant_type=client_credentials" \
+                    --data-urlencode "scope=$(AZURESCOPE)" \
+                    --data-urlencode "client_secret=$(azureClientSecret)")
                   
                   ID_TOKEN=$(echo $AZ_RESP | jq -r .access_token)
                   
                   if [ "$ID_TOKEN" == "null" ] || [ -z "$ID_TOKEN" ]; then
-                    echo "Error: Failed to acquire Azure Token. Response: $AZ_RESP"
+                    echo "Error: Azure Token Acquisition Failed. Response: $AZ_RESP"
                     exit 1
                   fi
                   echo "##vso[task.setvariable variable=idToken;issecret=true]$ID_TOKEN"
@@ -53,12 +57,18 @@ jobs:
                 script: |
                   set -e
                   echo "Exchanging Azure Token for JFrog Token (OIDC)..."
-                  # Increased connect-timeout to 60s and max-time to 120s to resolve Exit Code 28
+                  # Added error catching for the curl response
                   JF_RESP=$(curl -s --location --connect-timeout 60 --max-time 120 \
-                    '$(JFROGJPDURL)/access/api/v1/oidc/token' \
+                    "$(JFROGJPDURL)/access/api/v1/oidc/token" \
                     --header 'Content-Type: application/json' \
-                    --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" }')
+                    --data "{\"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\", \"subject_token_type\": \"urn:ietf:params:oauth:token-type:id_token\", \"subject_token\": \"$(idToken)\", \"provider_name\": \"jfrog-oidc-azure\" }")
                   
+                  # Check if response is valid JSON before parsing
+                  if ! echo "$JF_RESP" | jq -e . >/dev/null 2>&1; then
+                    echo "Error: JFrog API did not return valid JSON. Response was: $JF_RESP"
+                    exit 1
+                  fi
+
                   JF_TOKEN=$(echo $JF_RESP | jq -r .access_token)
                   
                   if [ "$JF_TOKEN" == "null" ] || [ -z "$JF_TOKEN" ]; then
@@ -72,19 +82,16 @@ jobs:
               inputs:
                 script: | 
                   set -x
-                  # Download JF CLI
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
                   
-                  # Configure using a unique Server ID per build to avoid "Already Exists" errors
                   SERVER_ID="oidc-$(Build.BuildId)"
                   /tmp/jftool/jf c add $SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
                   
                   /tmp/jftool/jf c use $SERVER_ID
                   /tmp/jftool/jf rt ping
                   
-                  # Final Upload to example-repo-local
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
                     "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
                     -d "oidc-azure-cicd-verified"
