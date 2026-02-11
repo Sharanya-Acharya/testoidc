@@ -31,8 +31,19 @@ jobs:
               inputs:
                 script: | 
                   set -e
-                  # Using jq -r ensures no hidden quotes in the token
-                  echo "##vso[task.setvariable variable=idToken;issecret=true]$(curl -s --location '$(AZURETOKENURL)' --header 'Content-Type: application/x-www-form-urlencoded' --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)' | jq -r .access_token)" 
+                  echo "Acquiring Azure Access Token..."
+                  # Uses jq -r to extract a clean string for the next step
+                  AZ_RESP=$(curl -s --location '$(AZURETOKENURL)' \
+                    --header 'Content-Type: application/x-www-form-urlencoded' \
+                    --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)')
+                  
+                  ID_TOKEN=$(echo $AZ_RESP | jq -r .access_token)
+                  
+                  if [ "$ID_TOKEN" == "null" ] || [ -z "$ID_TOKEN" ]; then
+                    echo "Error: Failed to acquire Azure Token. Response: $AZ_RESP"
+                    exit 1
+                  fi
+                  echo "##vso[task.setvariable variable=idToken;issecret=true]$ID_TOKEN"
               env: 
                 AZURECLIENTSECRET: $(azureClientSecret) 
             
@@ -41,12 +52,17 @@ jobs:
               inputs:
                 script: |
                   set -e
-                  # Exchanges token. If this returns an error, the pipeline will stop immediately
-                  JF_RESP=$(curl -s --location '$(JFROGJPDURL)/access/api/v1/oidc/token' --header 'Content-Type: application/json' --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" } ')
+                  echo "Exchanging Azure Token for JFrog Token (OIDC)..."
+                  # Increased connect-timeout to 60s and max-time to 120s to resolve Exit Code 28
+                  JF_RESP=$(curl -s --location --connect-timeout 60 --max-time 120 \
+                    '$(JFROGJPDURL)/access/api/v1/oidc/token' \
+                    --header 'Content-Type: application/json' \
+                    --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" }')
+                  
                   JF_TOKEN=$(echo $JF_RESP | jq -r .access_token)
                   
                   if [ "$JF_TOKEN" == "null" ] || [ -z "$JF_TOKEN" ]; then
-                    echo "Error: JFrog token exchange failed: $JF_RESP"
+                    echo "Error: JFrog token exchange failed. Response: $JF_RESP"
                     exit 1
                   fi
                   echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$JF_TOKEN"
@@ -56,22 +72,21 @@ jobs:
               inputs:
                 script: | 
                   set -x
+                  # Download JF CLI
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
                   
-                  # Generate a unique Server ID for this specific build to avoid "Already exists" errors
-                  UNIQUE_SERVER_ID="oidc-$(Build.BuildId)"
+                  # Configure using a unique Server ID per build to avoid "Already Exists" errors
+                  SERVER_ID="oidc-$(Build.BuildId)"
+                  /tmp/jftool/jf c add $SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
                   
-                  # Configures CLI with the unique ID and the validated token
-                  /tmp/jftool/jf c add $UNIQUE_SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
+                  /tmp/jftool/jf c use $SERVER_ID
+                  /tmp/jftool/jf rt ping
                   
-                  /tmp/jftool/jf c use $UNIQUE_SERVER_ID
-                  
-                  # Skip ping if network is unstable; the PUT command will verify connectivity
-                  /tmp/jftool/jf rt ping --server-id $UNIQUE_SERVER_ID
-                  
-                  # Final Upload
-                  curl -XPUT -H "Authorization: Bearer $(jfrogToken)" "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" -d "oidc-azure-cicd-success"
+                  # Final Upload to example-repo-local
+                  curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
+                    "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
+                    -d "oidc-azure-cicd-verified"
               env: 
                 CI: True
