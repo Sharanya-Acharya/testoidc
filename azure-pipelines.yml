@@ -2,11 +2,9 @@ trigger:
 - main
 
 pool:
-  name: Default
+  name: Default  # Running on your 'austinf-linux' agent
 
 variables:
-  # JFrog Instance Details
-  JFROGJPDURL: 'https://hts2.jfrog.info/'
   # Metadata for JFrog OIDC mapping
   JF_GIT_PROJECT: $(System.TeamProject)
   JF_GIT_REPO: $(Build.Repository.Name)
@@ -14,6 +12,7 @@ variables:
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
+  JFROGJPDURL: 'https://hts2.jfrog.info/'
 
 jobs:
 - deployment: MVN_PIPELINE
@@ -34,10 +33,18 @@ jobs:
                 script: | 
                   set -e
                   echo "Fetching Azure Access Token..."
-                  # We use jq -r to get a raw string
+                  
+                  # Trimming potential whitespace from variables
+                  CLIENT_ID=$(echo "$(AZURECLIENTID)" | xargs)
+                  CLIENT_SECRET=$(echo "$(azureClientSecret)" | xargs)
+                  SCOPE=$(echo "$(AZURESCOPE)" | xargs)
+                  
                   AZ_RESP=$(curl -s --location '$(AZURETOKENURL)' \
                     --header 'Content-Type: application/x-www-form-urlencoded' \
-                    --data "client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)")
+                    --data-urlencode "client_id=${CLIENT_ID}" \
+                    --data-urlencode "grant_type=client_credentials" \
+                    --data-urlencode "scope=${SCOPE}" \
+                    --data-urlencode "client_secret=${CLIENT_SECRET}")
                   
                   ID_TOKEN=$(echo $AZ_RESP | jq -r .access_token)
                   
@@ -55,8 +62,6 @@ jobs:
               inputs:
                 script: |
                   set -e
-                  echo "Exchanging Azure Token for JFrog OIDC Token..."
-                  # connect-timeout handles potential GCP network lag
                   JF_RESP=$(curl -s --location --connect-timeout 60 --max-time 120 \
                     '$(JFROGJPDURL)/access/api/v1/oidc/token' \
                     --header 'Content-Type: application/json' \
@@ -76,21 +81,15 @@ jobs:
               inputs:
                 script: | 
                   set -x
-                  # Setup CLI tools
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
                   
-                  # Unique Server ID avoids "Already Exists" error on self-hosted agent
                   SERVER_ID="oidc-$(Build.BuildId)"
                   /tmp/jftool/jf c add $SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
                   
                   /tmp/jftool/jf c use $SERVER_ID
                   /tmp/jftool/jf rt ping --server-id $SERVER_ID
                   
-                  # Final Authenticated Upload
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
-                    "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
-                    -d "oidc-azure-cicd-verified"
-              env: 
-                CI: True
+                    "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-
