@@ -2,17 +2,18 @@ trigger:
 - main
 
 pool:
-  name: Default  # This ensures it runs on your 'austinf-linux' agent
+  # This ensures the job runs on your self-hosted agent
+  name: Default 
 
 variables:
-  # Project details
+  # Predefined Azure Pipelines variables
   JF_GIT_PROJECT: $(System.TeamProject)
   JF_GIT_REPO: $(Build.Repository.Name)
   JF_GIT_API_ENDPOINT: $(System.CollectionUri)
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
-  # JFrog specific URL
+  # Your specific JFrog URL
   JFROGJPDURL: 'https://mill.jfrog.info:12359'
 
 jobs:
@@ -32,20 +33,8 @@ jobs:
               displayName: 'Acquire Azure ID Token' 
               inputs:
                 script: | 
-                  set -e
-                  echo "Fetching Azure Token..."
-                  TOKEN_JSON=$(curl -s --location '$(AZURETOKENURL)' \
-                    --header 'Content-Type: application/x-www-form-urlencoded' \
-                    --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)')
-                  
-                  ACCESS_TOKEN=$(echo $TOKEN_JSON | jq -r .access_token)
-                  
-                  if [ "$ACCESS_TOKEN" == "null" ] || [ -z "$ACCESS_TOKEN" ]; then
-                    echo "Error: Failed to acquire Azure Token"
-                    exit 1
-                  fi
-                  
-                  echo "##vso[task.setvariable variable=idToken;issecret=true]$ACCESS_TOKEN"
+                  set -x
+                  echo "##vso[task.setvariable variable=idToken;issecret=true]$(curl --location '$(AZURETOKENURL)' --header 'Content-Type: application/x-www-form-urlencoded' --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)' | jq .access_token | tr -d '"')" 
               env: 
                 AZURECLIENTSECRET: $(azureClientSecret) 
             
@@ -53,42 +42,20 @@ jobs:
               displayName: 'Acquire JFrog token' 
               inputs:
                 script: |
-                  set -e
-                  echo "Exchanging Azure Token for JFrog Token..."
-                  JF_TOKEN_JSON=$(curl -s --location '$(JFROGJPDURL)/access/api/v1/oidc/token' \
-                    --header 'Content-Type: application/json' \
-                    --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" }')
-                  
-                  JF_ACCESS_TOKEN=$(echo $JF_TOKEN_JSON | jq -r .access_token)
-                  
-                  if [ "$JF_ACCESS_TOKEN" == "null" ] || [ -z "$JF_ACCESS_TOKEN" ]; then
-                    echo "Error: Failed to acquire JFrog Token"
-                    echo "Response: $JF_TOKEN_JSON"
-                    exit 1
-                  fi
-                  
-                  echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$JF_ACCESS_TOKEN"
+                  set -x
+                  echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$(curl --location '$(JFROGJPDURL)/access/api/v1/oidc/token' --header 'Content-Type: application/json' --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" } ' | jq .access_token | tr -d '"')"
 
             - task: CmdLine@2
-              displayName: "Setup JF CLI and Upload" 
+              displayName: "Setup JF CLI and Upload text file" 
               inputs:
                 script: | 
-                  set -e
-                  # 1. Download CLI
+                  set -x
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
-                  
-                  # 2. Configure CLI (Corrected syntax: 'jf c add <server-id>')
-                  /tmp/jftool/jf c add oidctest --url $(JFROGJPDURL) --access-token $(jfrogToken) --overwrite
-                  
-                  # 3. Use and Test
+                  /tmp/jftool/jf c add --url $(JFROGJPDURL) --access-token $(jfrogToken) --overwrite oidctest
                   /tmp/jftool/jf c use oidctest
                   /tmp/jftool/jf rt ping
-                  
-                  # 4. Upload File
-                  curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
-                    "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc--final-azure-pipeline-poc-$(date +%Y%m%d%H%M%S)" \
-                    -d "oidc-azure-cicd-"
+                  curl -XPUT -H "Authorization: Bearer $(jfrogToken)" "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc--final-azure-pipeline-poc-$(date +%Y%m%d%H%M%S)" -d "oidc-azure-cicd-"
               env: 
                 CI: True
