@@ -2,17 +2,18 @@ trigger:
 - main
 
 pool:
-  vmImage: ubuntu-latest
+  # This ensures the job runs on your self-hosted agent
+  name: Default 
 
 variables:
-  # Predefined Azure Pipelines variables.
+  # Predefined Azure Pipelines variables
   JF_GIT_PROJECT: $(System.TeamProject)
   JF_GIT_REPO: $(Build.Repository.Name)
   JF_GIT_API_ENDPOINT: $(System.CollectionUri)
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
-  # Added your JFrog URL here
+  # Your specific JFrog URL
   JFROGJPDURL: 'https://mill.jfrog.info:12359'
 
 jobs:
@@ -21,14 +22,13 @@ jobs:
   environment: 
     name: gcp
     resourceType: virtualMachine
-    # Updated with your self-hosted machine resource name
-    resourceName: <resource_name> 
+    resourceName: austinf-linux
   strategy:
     runOnce:
       deploy:   
           steps:
             - checkout: self
-
+            
             - task: CmdLine@2
               displayName: 'Acquire Azure ID Token' 
               inputs:
@@ -43,7 +43,6 @@ jobs:
               inputs:
                 script: |
                   set -x
-                  # Updated provider_name to jfrog-oidc-azure
                   echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$(curl --location '$(JFROGJPDURL)/access/api/v1/oidc/token' --header 'Content-Type: application/json' --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" } ' | jq .access_token | tr -d '"')"
 
             - task: CmdLine@2
