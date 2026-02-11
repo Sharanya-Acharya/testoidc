@@ -2,18 +2,17 @@ trigger:
 - main
 
 pool:
-  name: Default  # Runs on your 'austinf-linux' agent
+  name: Default
 
 variables:
-  # JFrog Instance Details (No trailing slash to prevent double-slash errors)
-  JFROGJPDURL: 'https://hts2.jfrog.info'
-  # Metadata for JFrog OIDC mapping
   JF_GIT_PROJECT: $(System.TeamProject)
   JF_GIT_REPO: $(Build.Repository.Name)
   JF_GIT_API_ENDPOINT: $(System.CollectionUri)
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
+  # Updated to your hts2 URL (no trailing slash)
+  JFROGJPDURL: 'https://hts2.jfrog.info'
 
 jobs:
 - deployment: MVN_PIPELINE
@@ -33,8 +32,8 @@ jobs:
               inputs:
                 script: | 
                   set -e
-                  echo "Fetching Azure Access Token..."
-                  # Uses --data-urlencode to safely handle special characters in your secret
+                  echo "Acquiring Azure Access Token..."
+                  # data-urlencode ensures your new secret qZ78Q~... is sent correctly
                   AZ_RESP=$(curl -s --location '$(AZURETOKENURL)' \
                     --header 'Content-Type: application/x-www-form-urlencoded' \
                     --data-urlencode "client_id=$(AZURECLIENTID)" \
@@ -45,8 +44,7 @@ jobs:
                   ID_TOKEN=$(echo $AZ_RESP | jq -r .access_token)
                   
                   if [ "$ID_TOKEN" == "null" ] || [ -z "$ID_TOKEN" ]; then
-                    echo "##[error]Azure Token Acquisition Failed!"
-                    echo "Response: $AZ_RESP"
+                    echo "Error: Failed to acquire Azure Token. Response: $AZ_RESP"
                     exit 1
                   fi
                   echo "##vso[task.setvariable variable=idToken;issecret=true]$ID_TOKEN"
@@ -59,8 +57,7 @@ jobs:
                 script: |
                   set -e
                   echo "Exchanging Azure Token for JFrog Token (OIDC)..."
-                  
-                  # Added User-Agent and specific headers to bypass CloudFront 403 blocks
+                  # Added User-Agent -A and Accept header to bypass CloudFront 403
                   JF_RESP=$(curl -s --location --connect-timeout 60 --max-time 120 \
                     -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
                     -H "Accept: application/json" \
@@ -73,18 +70,16 @@ jobs:
                       \"provider_name\": \"jfrog-oidc-azure\"
                     }")
                   
-                  # Safety check: Verify the response is valid JSON
+                  # Check if we got JSON back or a CloudFront error page
                   if ! echo "$JF_RESP" | jq -e . >/dev/null 2>&1; then
-                    echo "##[error]CloudFront is still blocking the request!"
-                    echo "Full Response was: $JF_RESP"
+                    echo "Error: JFrog API blocked or returned invalid JSON. Response: $JF_RESP"
                     exit 1
                   fi
 
                   JF_TOKEN=$(echo $JF_RESP | jq -r .access_token)
                   
                   if [ "$JF_TOKEN" == "null" ] || [ -z "$JF_TOKEN" ]; then
-                    echo "##[error]JFrog OIDC Exchange Failed!"
-                    echo "JFrog Response: $JF_RESP"
+                    echo "Error: JFrog token exchange failed. Response: $JF_RESP"
                     exit 1
                   fi
                   echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$JF_TOKEN"
@@ -94,19 +89,16 @@ jobs:
               inputs:
                 script: | 
                   set -x
-                  # CLI Installation
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
                   
-                  # Use unique Server ID to avoid 'Already Exists' errors on your VM
                   SERVER_ID="oidc-$(Build.BuildId)"
                   /tmp/jftool/jf c add $SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
                   
                   /tmp/jftool/jf c use $SERVER_ID
-                  /tmp/jftool/jf rt ping --server-id $SERVER_ID
+                  /tmp/jftool/jf rt ping
                   
-                  # Authenticated upload via curl
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
                     "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
                     -d "oidc-azure-cicd-verified"
