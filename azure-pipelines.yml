@@ -2,8 +2,8 @@ trigger:
 - main
 
 pool:
-  # This ensures the job runs on your self-hosted agent
-  name: Default 
+  # Using your self-hosted agent pool
+  name: Default
 
 variables:
   # Predefined Azure Pipelines variables
@@ -22,7 +22,8 @@ jobs:
   environment: 
     name: gcp
     resourceType: virtualMachine
-    resourceName: austinf-linux
+    # Updated with your specific resource name
+    resourceName: austinf-linux 
   strategy:
     runOnce:
       deploy:   
@@ -34,28 +35,46 @@ jobs:
               inputs:
                 script: | 
                   set -x
+                  # Acquires the initial token from Azure
                   echo "##vso[task.setvariable variable=idToken;issecret=true]$(curl --location '$(AZURETOKENURL)' --header 'Content-Type: application/x-www-form-urlencoded' --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)' | jq .access_token | tr -d '"')" 
               env: 
                 AZURECLIENTSECRET: $(azureClientSecret) 
             
             - task: CmdLine@2
+              displayName: 'Print Azure ID token'
+              inputs:
+                script: 'echo "ID token: $(idToken)"'
+
+            - task: CmdLine@2
               displayName: 'Acquire JFrog token' 
               inputs:
                 script: |
                   set -x
+                  # Exchanges Azure token for JFrog token using your provider
                   echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$(curl --location '$(JFROGJPDURL)/access/api/v1/oidc/token' --header 'Content-Type: application/json' --data '{"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token_type": "urn:ietf:params:oauth:token-type:id_token", "subject_token": "$(idToken)", "provider_name": "jfrog-oidc-azure" } ' | jq .access_token | tr -d '"')"
 
+            - task: CmdLine@2
+              displayName: "Display acquired JFrog token"
+              inputs:
+                script: 'echo "ID token: $(jfrogToken)"'
+            
             - task: CmdLine@2
               displayName: "Setup JF CLI and Upload text file" 
               inputs:
                 script: | 
                   set -x
+                  # Download and setup JFrog CLI
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
-                  /tmp/jftool/jf c add --url $(JFROGJPDURL) --access-token $(jfrogToken) --overwrite oidctest
+                  
+                  # Configures CLI and performs the upload to Artifactory
+                  /tmp/jftool/jf c add oidctest --url $(JFROGJPDURL) --access-token $(jfrogToken) --overwrite 
                   /tmp/jftool/jf c use oidctest
+                  /tmp/jftool/jf c s
                   /tmp/jftool/jf rt ping
+                  
+                  # Final upload command as per your requirements
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc--final-azure-pipeline-poc-$(date +%Y%m%d%H%M%S)" -d "oidc-azure-cicd-"
               env: 
                 CI: True
