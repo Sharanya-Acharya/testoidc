@@ -68,12 +68,6 @@ jobs:
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
                   
-                  # Configures CLI and performs the upload to Artifactory
-                  /tmp/jftool/jf c add oidctest --url $(JFROGJPDURL) --access-token $(jfrogToken) --overwrite 
-                  /tmp/jftool/jf c use oidctest
-                  /tmp/jftool/jf c s
-                  /tmp/jftool/jf rt ping
-                  
                   # Final upload command as per your requirements
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc--final-azure-pipeline-poc-$(date +%Y%m%d%H%M%S)" -d "oidc-azure-cicd-"
               env: 
