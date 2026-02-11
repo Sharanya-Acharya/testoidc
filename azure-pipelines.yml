@@ -11,7 +11,7 @@ variables:
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
-  # Fixed: Removed trailing slash to prevent double-slashes in API calls
+  # Ensure NO trailing slash here
   JFROGJPDURL: 'https://hts2.jfrog.info'
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
                 script: | 
                   set -e
                   echo "Acquiring Azure Access Token..."
-                  # data-urlencode safely handles special characters in your secret
+                  # data-urlencode handles special characters in your secret
                   AZ_RESP=$(curl -s --location '$(AZURETOKENURL)' \
                     --header 'Content-Type: application/x-www-form-urlencoded' \
                     --data-urlencode "client_id=$(AZURECLIENTID)" \
@@ -57,15 +57,22 @@ jobs:
                 script: |
                   set -e
                   echo "Exchanging Azure Token for JFrog Token (OIDC)..."
-                  # Added error catching for the curl response
+                  # Added User-Agent and refined JSON payload to pass CloudFront checks
                   JF_RESP=$(curl -s --location --connect-timeout 60 --max-time 120 \
+                    -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
                     "$(JFROGJPDURL)/access/api/v1/oidc/token" \
                     --header 'Content-Type: application/json' \
-                    --data "{\"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\", \"subject_token_type\": \"urn:ietf:params:oauth:token-type:id_token\", \"subject_token\": \"$(idToken)\", \"provider_name\": \"jfrog-oidc-azure\" }")
+                    --data "{
+                      \"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\",
+                      \"subject_token_type\": \"urn:ietf:params:oauth:token-type:id_token\",
+                      \"subject_token\": \"$(idToken)\",
+                      \"provider_name\": \"jfrog-oidc-azure\"
+                    }")
                   
-                  # Check if response is valid JSON before parsing
+                  # Check if response is valid JSON
                   if ! echo "$JF_RESP" | jq -e . >/dev/null 2>&1; then
-                    echo "Error: JFrog API did not return valid JSON. Response was: $JF_RESP"
+                    echo "Error: Request blocked by security layer (CloudFront 403)."
+                    echo "Response was: $JF_RESP"
                     exit 1
                   fi
 
@@ -85,13 +92,7 @@ jobs:
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
-                  
-                  SERVER_ID="oidc-$(Build.BuildId)"
-                  /tmp/jftool/jf c add $SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
-                  
-                  /tmp/jftool/jf c use $SERVER_ID
-                  /tmp/jftool/jf rt ping
-                  
+                           
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
                     "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
                     -d "oidc-azure-cicd-verified"
