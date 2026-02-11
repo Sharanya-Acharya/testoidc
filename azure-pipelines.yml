@@ -11,7 +11,7 @@ variables:
   JF_GIT_BASE_BRANCH: $(Build.SourceBranchName)
   JF_GIT_OWNER: $(System.TeamProject)
   JF_GIT_PROVIDER: 'azureRepos'
-  # Updated JPD URL based on your latest log
+  # Ensure this URL is correct for your JPD
   JFROGJPDURL: 'https://hts2.jfrog.io/'
 
 jobs:
@@ -33,16 +33,21 @@ jobs:
                 script: | 
                   set -e
                   echo "Fetching Azure Access Token..."
-                  # jq -r ensures no quotes are included in the token string
-                  AZ_TOKEN=$(curl -s --location '$(AZURETOKENURL)' \
+                  # Capturing the full response for diagnostics
+                  AZ_RESP=$(curl -s --location '$(AZURETOKENURL)' \
                     --header 'Content-Type: application/x-www-form-urlencoded' \
-                    --data 'client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)' | jq -r .access_token)
+                    --data "client_id=$(AZURECLIENTID)&grant_type=client_credentials&scope=$(AZURESCOPE)&client_secret=$(AZURECLIENTSECRET)")
                   
-                  if [ "$AZ_TOKEN" == "null" ] || [ -z "$AZ_TOKEN" ]; then
-                    echo "Error: Azure token acquisition failed."
+                  ID_TOKEN=$(echo $AZ_RESP | jq -r .access_token)
+                  
+                  if [ "$ID_TOKEN" == "null" ] || [ -z "$ID_TOKEN" ]; then
+                    echo "##[error]Azure token acquisition failed!"
+                    echo "##[debug]Full Response from Azure: $AZ_RESP"
+                    # This will print the error message from Azure to your logs
+                    echo "Azure Response: $AZ_RESP"
                     exit 1
                   fi
-                  echo "##vso[task.setvariable variable=idToken;issecret=true]$AZ_TOKEN"
+                  echo "##vso[task.setvariable variable=idToken;issecret=true]$ID_TOKEN"
               env: 
                 AZURECLIENTSECRET: $(azureClientSecret) 
             
@@ -52,7 +57,6 @@ jobs:
                 script: |
                   set -e
                   echo "Exchanging Azure Token for JFrog OIDC Token..."
-                  # Increased connect-timeout to 60s to prevent Exit Code 28
                   JF_RESP=$(curl -s --location --connect-timeout 60 --max-time 120 \
                     '$(JFROGJPDURL)/access/api/v1/oidc/token' \
                     --header 'Content-Type: application/json' \
@@ -61,7 +65,8 @@ jobs:
                   JF_TOKEN=$(echo $JF_RESP | jq -r .access_token)
                   
                   if [ "$JF_TOKEN" == "null" ] || [ -z "$JF_TOKEN" ]; then
-                    echo "Error: JFrog OIDC exchange failed. Response: $JF_RESP"
+                    echo "##[error]JFrog OIDC exchange failed!"
+                    echo "JFrog Response: $JF_RESP"
                     exit 1
                   fi
                   echo "##vso[task.setvariable variable=jfrogToken;issecret=true]$JF_TOKEN"
@@ -71,19 +76,16 @@ jobs:
               inputs:
                 script: | 
                   set -x
-                  # Download and setup CLI
                   curl -fkL https://getcli.jfrog.io/v2-jf | sh
                   mkdir -p /tmp/jftool
                   mv jf /tmp/jftool/
                   
-                  # Configure CLI using the BuildId for a unique Server ID
                   SERVER_ID="oidc-$(Build.BuildId)"
                   /tmp/jftool/jf c add $SERVER_ID --url $(JFROGJPDURL) --access-token "$(jfrogToken)" --overwrite
                   
                   /tmp/jftool/jf c use $SERVER_ID
                   /tmp/jftool/jf rt ping --server-id $SERVER_ID
                   
-                  # Perform the authenticated upload
                   curl -XPUT -H "Authorization: Bearer $(jfrogToken)" \
                     "$(JFROGJPDURL)/artifactory/example-repo-local/azure/oidc-final-$(date +%Y%m%d%H%M%S)" \
                     -d "oidc-azure-cicd-success"
